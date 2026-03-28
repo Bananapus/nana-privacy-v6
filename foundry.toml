@@ -1,0 +1,29 @@
+[profile.default]
+solc = '0.8.28'
+evm_version = 'cancun'
+optimizer_runs = 200
+libs = ["node_modules", "lib"]
+fs_permissions = [{ access = "read-write", path = "./"}]
+
+[fuzz]
+runs = 4096
+
+[invariant]
+runs = 1024
+depth = 100
+fail_on_revert = false
+
+[profile.ci.fuzz]
+runs = 256
+
+[profile.ci.invariant]
+runs = 64
+depth = 50
+
+[lint]
+lint_on_build = false
+
+[fmt]
+number_underscore = "thousands"
+multiline_func_header = "all"
+wrap_comments = true

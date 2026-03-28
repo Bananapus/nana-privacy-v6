@@ -1,0 +1,16 @@
+{
+  "name": "nana-privacy-v6",
+  "version": "0.0.1",
+  "dependencies": {
+    "@bananapus/core-v6": "^0.0.28",
+    "@bananapus/721-hook-v6": "^0.0.22",
+    "@bananapus/address-registry-v6": "^0.0.16",
+    "@bananapus/ownable-v6": "^0.0.15",
+    "@bananapus/permission-ids-v6": "^0.0.14",
+    "@chainlink/contracts": "^1.5.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "@prb/math": "^4.1.1",
+    "@uniswap/permit2": "github:Uniswap/permit2",
+    "solady": "^0.1.8"
+  }
+}
