@@ -1,12 +1,28 @@
-# RISKS.md — nana-privacy-v6
+# Nana Privacy Risk Register
+
+This file focuses on the privacy-model risks in the standalone privacy layer: anonymity-set weakness, stealth-address leakage, and the gap between cryptographic privacy goals and what on-chain observers can still infer.
+
+## How to use this file
+
+- Read `Priority risks` first; the sharpest failures here are usually metadata leaks, not broken transfers.
+- Use the detailed sections for anonymity-set and stealth-address reasoning.
+- Treat `Accepted Behaviors` as explicit statements of what the system does not try to hide.
+
+## Priority risks
+
+| Priority | Risk | Why it matters | Primary controls |
+|----------|------|----------------|------------------|
+| P0 | Small anonymity sets | Privacy weakens sharply if too few users share denominations or timing windows. | Denomination design, user education, and honest disclosure of set-size limits. |
+| P1 | Metadata leakage outside the crypto layer | Timing, denomination choice, bridge behavior, or downstream 721 activity can deanonymize otherwise-private flows. | Operational guidance, wallet hygiene, and conservative documentation of privacy guarantees. |
+| P1 | Stealth-address implementation mistakes | A subtle mismatch in stealth-address derivation or handling can burn funds or reveal recipients. | Tight test coverage, standard adherence, and explicit invariants around derivation and delivery. |
+
 
 ## 1. Trust Assumptions
 
-- **JBMultiTerminal**: The relay pool trusts the terminal to correctly process payments via `IJBTerminal.pay()`. A compromised terminal can steal forwarded ETH. The relay pool has no way to verify terminal authenticity beyond the caller-provided `terminal` address.
+- **JBMultiTerminal**: The privacy system trusts terminals to correctly process payments. A compromised terminal can steal forwarded ETH. External ZK relayers (e.g., Railgun) have their own terminal verification mechanisms.
 - **ERC5564Announcer**: The announcer is stateless and trustless — it only emits events. However, the privacy model trusts that announcement events are the sole mechanism for stealth address discovery. If the announcer contract is blocked or censored at the RPC level, recipients cannot discover payments.
 - **StealthRegistry**: The registry trusts that accounts register valid meta-addresses. Malformed or adversarial meta-addresses cause stealth address computation to fail silently off-chain. The contract performs no validation of the meta-address format.
 - **JBMetadataResolver**: All stealth metadata extraction depends on `JBMetadataResolver.getDataFor()` correctly parsing the payer metadata. A bug in the resolver library would break stealth detection.
-- **Inner Hook (JB721TiersHook)**: The `PrivacyDataHookWrapper` delegates to `INNER_HOOK` for weight and hook specs. A malicious inner hook can return arbitrary weight values or hook specs, potentially redirecting funds. The inner hook is set at construction and cannot be changed.
 - **Trusted Forwarder (ERC-2771)**: Private cash outs rely on `JBMultiTerminal` correctly extracting `_msgSender()` from ERC-2771 meta-transactions. A compromised trusted forwarder can impersonate any stealth address for cash outs.
 
 ## 2. Anonymity Set Risks
@@ -15,13 +31,13 @@
 
 The anonymity set for a privacy tier equals the total number of mints of that tier across all time. A tier with 3 mints provides trivial privacy — an observer can narrow the payer/recipient to one of 3 possibilities. The anonymity set grows cumulatively and is never reduced (NFTs cannot be un-minted). Early projects should be transparent about weak privacy guarantees.
 
-**Mitigation**: Projects can share privacy tier configurations (same tier IDs, same prices) across multiple projects to bootstrap larger sets. The relay pool is shared across all projects, so payer anonymity benefits from total relay pool usage.
+**Mitigation**: Projects can share privacy tier configurations (same tier IDs, same prices) across multiple projects to bootstrap larger sets. ZK relayer anonymity sets (e.g., Railgun's shielded pool) are shared across all projects and all DeFi protocols.
 
 ### 2.2 Multi-tier mints leak total contribution
 
 A payment minting 3× Tier 3 + 1× Tier 2 reveals the total contribution (3.1 ETH). Single-tier mints have the strongest privacy. Multi-tier mints in one transaction create a unique fingerprint that may be identifiable if the combination is rare.
 
-**Mitigation**: Split large contributions across multiple transactions to different stealth addresses via different relay pool calls. Each transaction should mint a single tier for maximum privacy.
+**Mitigation**: Split large contributions across multiple transactions to different stealth addresses. Each transaction should mint a single tier for maximum privacy.
 
 ### 2.3 Metadata distinguishability
 
@@ -29,9 +45,7 @@ The `Pay` event includes payer metadata containing stealth data (under the `"ste
 
 ### 2.4 Timing correlation
 
-`PaymentRelayPool` is a stateless pass-through — it immediately forwards payments. An observer monitoring both the relay pool's receive and the terminal's `Pay` event sees them in the same transaction. If the relay pool is funded from a known address in a prior transaction, the timing correlation breaks privacy.
-
-**Mitigation**: For ETH payments, the relay pool call is atomic (fund + forward in one tx), so there is no separate funding transaction. The attacker must correlate based on mempool observation, not on-chain state. For ERC-20 tokens, the token transfer to the relay pool IS visible on-chain — **use native ETH for privacy payments**.
+Without ZK infrastructure, an observer can correlate the funding transaction with the payment transaction. ZK relayers like Railgun break this link by pooling funds in a shielded pool — the time between deposit and withdrawal is variable and unlinkable. **Use ZK infrastructure for payer privacy.**
 
 ## 3. Stealth Address Risks
 
@@ -52,56 +66,26 @@ If a payer reuses the same ephemeral keypair for two payments to the same recipi
 
 Newly created stealth addresses have zero ETH balance. To transact (transfer NFTs, cash out), the address needs gas. Funding the stealth address from a known address creates a link. Private cash outs use ERC-2771 meta-transactions (trusted forwarder pays gas) to avoid this. For other operations, consider gas relayers or account abstraction.
 
-## 4. Relay Pool Risks
+## 4. Invariants
 
-### 4.1 Arbitrary terminal parameter
+1. **ERC5564Announcer is stateless**: The announcer has no storage slots. It only emits events. It cannot be paused, upgraded, or drained.
 
-`PaymentRelayPool.relayPayment()` accepts an arbitrary `terminal` address. A malicious caller could pass a contract that accepts ETH but does not behave as a Juicebox terminal. The relay pool has no validation — it forwards `msg.value` to whatever address is provided. This is by design (the relay pool is a general-purpose forwarding tool), but callers must verify the terminal address off-chain.
+2. **StealthRegistry is self-sovereign**: Only `msg.sender` can write their own stealth meta-address. No admin can write or delete another account's registration.
 
-### 4.2 ERC-20 token privacy limitation
+3. **StealthAnnouncementHook is transparent for non-privacy payments**: When no stealth metadata is present, the hook no-ops gracefully -- no event emitted, no revert.
 
-For ERC-20 payments, the terminal calls `Permit2.transferFrom(msg.sender, ...)` where `msg.sender` is the relay pool. The tokens must be in the relay pool's balance before the call. Transferring ERC-20 tokens to the relay pool creates an on-chain trace (the `Transfer` event links the real payer to the pool). **Native ETH is the only token with strong privacy guarantees** because `msg.value` is part of the forwarding call itself.
+4. **Announcement events are append-only**: Once emitted, `Announcement` events cannot be modified or censored on-chain. They are permanently available for recipient scanning via archive nodes.
 
-### 4.3 Front-running relay pool transactions
+## 5. Accepted Behaviors
 
-A privacy payment in the mempool reveals: the relay pool is about to call `terminal.pay()` with a specific project ID, amount, and stealth address. A front-runner cannot extract value (no swap involved), but they learn the payment details before the transaction is mined. This is informational leakage, not a fund-loss risk.
+### 5.1 StealthAnnouncementHook no-ops without stealth metadata
 
-## 5. Data Hook Wrapper Risks
+When `StealthAnnouncementHook` is included in a pay-hook chain, it returns silently on non-privacy payments — no event, no revert. This is intentional: the hook checks for stealth metadata via `JBMetadataResolver.getDataFor()` and returns early if not found. The current repo does not, by itself, guarantee that upstream deployers permanently include this hook; integrators must wire it in explicitly where they want stealth announcements.
 
-### 5.1 Inner hook failure propagation
-
-If `INNER_HOOK.beforePayRecordedWith()` reverts, the entire payment reverts. The wrapper does not catch inner hook failures. A buggy inner hook can block all privacy payments.
-
-### 5.2 Hook spec array growth
-
-The wrapper creates a new array of length `hookSpecifications.length + 1` and copies all inner hook specs. For an inner hook returning many specs, this adds gas proportional to the array length. No practical concern for typical deployments (1-3 specs), but an inner hook returning hundreds of specs would cause gas issues.
-
-### 5.3 Metadata ID collision
-
-If another system uses `JBMetadataResolver.getId("stealth", sameTarget)` for a different purpose, the wrapper would incorrectly detect privacy mode on non-privacy payments. This is unlikely given the specific string "stealth" and the use of the announcer address as `metadataIdTarget`.
-
-## 6. Invariants
-
-1. **PaymentRelayPool holds no funds**: After every `relayPayment()` or `relayPaymentWithAnnouncement()` call, the relay pool's ETH balance returns to its pre-call value. All `msg.value` is forwarded to the terminal. No ERC-20 tokens are stored (ERC-20 privacy is not recommended).
-
-2. **ERC5564Announcer is stateless**: The announcer has no storage slots. It only emits events. It cannot be paused, upgraded, or drained.
-
-3. **StealthRegistry is self-sovereign**: Only `msg.sender` can write their own stealth meta-address. No admin can write or delete another account's registration.
-
-4. **PrivacyDataHookWrapper is transparent for non-privacy payments**: When no stealth metadata is present, the wrapper returns exactly what the inner hook returns (or context defaults if no inner hook). No weight modification, no extra hook specs.
-
-5. **Announcement events are append-only**: Once emitted, `Announcement` events cannot be modified or censored on-chain. They are permanently available for recipient scanning via archive nodes.
-
-## 7. Accepted Behaviors
-
-### 7.1 Duplicate announcements in the core direct path
-
-When using `relayPaymentWithAnnouncement` with a project that has `PrivacyDataHookWrapper` as its data hook, two `Announcement` events are emitted for the same payment — one from the relay pool and one from the hook. This is harmless (recipient scanning handles duplicates) and provides redundancy.
-
-### 7.2 No validation of stealth meta-address format
+### 5.2 No validation of stealth meta-address format
 
 `StealthRegistry.register()` accepts any `bytes` value, including empty bytes, malformed keys, or non-EIP-5564 data. The contract is a general-purpose registry — format validation is the responsibility of off-chain tooling.
 
-### 7.3 Anyone can announce for any stealth address
+### 5.3 Anyone can announce for any stealth address
 
 `ERC5564Announcer.announce()` has no access control. Anyone can emit `Announcement` events for any stealth address with any data. This means announcement events are not authenticated — recipients must verify the ECDH derivation off-chain (checking that the ephemeral public key, when combined with their viewing key, produces the claimed stealth address). Spam announcements create scanning overhead but cannot steal funds.
